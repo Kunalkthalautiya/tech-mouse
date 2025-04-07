@@ -317,366 +317,415 @@
     <script src="https://cdn.socket.io/4.0.1/socket.io.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.0.4/pako.min.js"></script>
     <script>
-        const socket = io.connect(window.location.origin);
-        const mousepad = document.getElementById('mousepad');
-        const cursor = document.getElementById('cursor');
-        const screenCursor = document.getElementById('screen-cursor');
-        const screenShare = document.getElementById('screen-share');
-        const screenStatus = document.getElementById('screen-status');
-        const screenShareBtn = document.getElementById('screen-share-btn');
-        const screenShareStop = document.getElementById('screen-share-stop');
-        const statsElement = document.getElementById('stats');
+        // Connection management
+        let socket;
         const connectionStatus = document.getElementById('connection-status');
-        const keyboardToggle = document.getElementById('keyboardToggle');
-        const keyboardInput = document.getElementById('keyboardInput');
+        const serverIp = '{{ server_ip }}';
         
-        // Performance tracking
-        let frameTimes = [];
-        let lastFrameTime = 0;
-        let fps = 0;
-        
-        // Mouse control variables
-        let rect = mousepad.getBoundingClientRect();
-        let currentCursorPosition = { x: rect.width / 2, y: rect.height / 2 };
-        let lastPosition = null;
-        let isTouching = false;
-        let screenCursorVisible = false;
-        let keyboardActive = false;
+        function connectToServer(ip) {
+            return new Promise((resolve, reject) => {
+                const newSocket = io.connect(`http://${ip}:5000`, {
+                    reconnectionAttempts: 3,
+                    timeout: 5000
+                });
 
-        // Double tap variables
-        let lastTapTime = 0;
-        let tapTimeout;
+                newSocket.on('connect', () => {
+                    console.log(`Connected to server at ${ip}:5000`);
+                    resolve(newSocket);
+                });
 
-        // Connection status
-        socket.on('connect', () => {
-            connectionStatus.textContent = 'Connected';
-            connectionStatus.style.color = '#3DBE29';
-        });
+                newSocket.on('connect_error', (error) => {
+                    console.error(`Connection to ${ip}:5000 failed:`, error);
+                    reject(error);
+                });
+            });
+        }
 
-        socket.on('disconnect', () => {
-            connectionStatus.textContent = 'Disconnected';
-            connectionStatus.style.color = '#EA4335';
-        });
-
-        // Initialize cursor
-        updateCursorPosition();
-
-        function updateCursorPosition() {
-            cursor.style.transform = `translate(${currentCursorPosition.x}px, ${currentCursorPosition.y}px)`;
-            
-            // Update screen cursor position proportionally
-            if (screenShare.offsetWidth > 0 && screenShare.offsetHeight > 0) {
-                const xRatio = screenShare.offsetWidth / rect.width;
-                const yRatio = screenShare.offsetHeight / rect.height;
-                const screenX = currentCursorPosition.x * xRatio;
-                const screenY = currentCursorPosition.y * yRatio;
+        async function initializeConnection() {
+            try {
+                // Try primary server IP first
+                socket = await connectToServer(serverIp);
+                connectionStatus.textContent = `Connected to ${serverIp}`;
+                connectionStatus.style.color = '#3DBE29';
+            } catch (primaryError) {
+                console.log('Primary connection failed, trying fallback...');
                 
-                screenCursor.style.transform = `translate(${screenX}px, ${screenY}px)`;
-                
-                if (!screenCursorVisible) {
-                    screenCursor.style.display = 'block';
-                    screenCursorVisible = true;
+                // Try localhost as fallback
+                try {
+                    socket = await connectToServer('127.0.0.1');
+                    connectionStatus.textContent = 'Connected to localhost';
+                    connectionStatus.style.color = '#3DBE29';
+                } catch (fallbackError) {
+                    console.error('All connection attempts failed');
+                    connectionStatus.textContent = 'Connection Failed';
+                    connectionStatus.style.color = '#EA4335';
+                    return;
                 }
             }
+            
+            // Setup all socket event listeners
+            setupSocketListeners();
         }
 
-        function getPosition(event) {
-            const touchEvent = event.touches ? event.touches[0] : event;
-            return {
-                x: touchEvent.clientX - rect.left,
-                y: touchEvent.clientY - rect.top
-            };
-        }
-
-        function handleMovement(position) {
-            if (!lastPosition) {
-                lastPosition = position;
-                return;
-            }
-
-            const deltaX = position.x - lastPosition.x;
-            const deltaY = position.y - lastPosition.y;
+        function setupSocketListeners() {
+            // Performance tracking
+            let frameTimes = [];
+            let lastFrameTime = 0;
+            let fps = 0;
             
-            // Apply acceleration
-            const speed = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-            const factor = Math.min(1 + speed * 0.5, 3);
+            // Mouse control variables
+            const mousepad = document.getElementById('mousepad');
+            const cursor = document.getElementById('cursor');
+            const screenCursor = document.getElementById('screen-cursor');
+            const screenShare = document.getElementById('screen-share');
+            const screenStatus = document.getElementById('screen-status');
+            const screenShareBtn = document.getElementById('screen-share-btn');
+            const screenShareStop = document.getElementById('screen-share-stop');
+            const statsElement = document.getElementById('stats');
+            const keyboardToggle = document.getElementById('keyboardToggle');
+            const keyboardInput = document.getElementById('keyboardInput');
             
-            const adjustedDeltaX = deltaX * 2.5 * factor;
-            const adjustedDeltaY = deltaY * 2.5 * factor;
-
-            socket.emit('move_mouse', { 
-                deltaX: adjustedDeltaX, 
-                deltaY: adjustedDeltaY 
-            });
-
-            // Update local cursor
-            currentCursorPosition.x += deltaX;
-            currentCursorPosition.y += deltaY;
+            let rect = mousepad.getBoundingClientRect();
+            let currentCursorPosition = { x: rect.width / 2, y: rect.height / 2 };
+            let lastPosition = null;
+            let isTouching = false;
+            let screenCursorVisible = false;
+            let keyboardActive = false;
             
-            // Boundary check
-            currentCursorPosition.x = Math.max(0, Math.min(currentCursorPosition.x, rect.width));
-            currentCursorPosition.y = Math.max(0, Math.min(currentCursorPosition.y, rect.height));
+            // Click tracking variables
+            let lastTapTime = 0;
+            let tapTimeout;
+            let movementDistance = 0;
+            const MOVEMENT_THRESHOLD = 8; // pixels
+            const TAP_TIME_THRESHOLD = 300; // ms
             
+            // Initialize cursor
             updateCursorPosition();
-            lastPosition = position;
-        }
-
-        function createRipple(x, y) {
-            const ripple = document.createElement('div');
-            ripple.className = 'double-tap-indicator';
-            ripple.style.left = `${x}px`;
-            ripple.style.top = `${y}px`;
-            mousepad.appendChild(ripple);
             
-            ripple.addEventListener('animationend', () => {
-                ripple.remove();
+            function updateCursorPosition() {
+                cursor.style.transform = `translate(${currentCursorPosition.x}px, ${currentCursorPosition.y}px)`;
+                
+                // Update screen cursor position proportionally
+                if (screenShare.offsetWidth > 0 && screenShare.offsetHeight > 0) {
+                    const xRatio = screenShare.offsetWidth / rect.width;
+                    const yRatio = screenShare.offsetHeight / rect.height;
+                    const screenX = currentCursorPosition.x * xRatio;
+                    const screenY = currentCursorPosition.y * yRatio;
+                    
+                    screenCursor.style.transform = `translate(${screenX}px, ${screenY}px)`;
+                    
+                    if (!screenCursorVisible) {
+                        screenCursor.style.display = 'block';
+                        screenCursorVisible = true;
+                    }
+                }
+            }
+            
+            function getPosition(event) {
+                const touchEvent = event.touches ? event.touches[0] : event;
+                return {
+                    x: touchEvent.clientX - rect.left,
+                    y: touchEvent.clientY - rect.top
+                };
+            }
+            
+            function trackMovement(position) {
+                if (lastPosition) {
+                    movementDistance += Math.hypot(
+                        position.x - lastPosition.x,
+                        position.y - lastPosition.y
+                    );
+                }
+            }
+            
+            function handleMovement(position) {
+                trackMovement(position);
+                
+                if (!lastPosition) {
+                    lastPosition = position;
+                    return;
+                }
+            
+                const deltaX = position.x - lastPosition.x;
+                const deltaY = position.y - lastPosition.y;
+                
+                // Smoother movement with linear acceleration
+                const speed = Math.hypot(deltaX, deltaY);
+                const acceleration = Math.min(1 + speed * 0.15, 1.5);
+                
+                const sensitivity = 2.2;
+                const adjustedDeltaX = deltaX * sensitivity * acceleration;
+                const adjustedDeltaY = deltaY * sensitivity * acceleration;
+            
+                socket.emit('move_mouse', { 
+                    deltaX: adjustedDeltaX, 
+                    deltaY: adjustedDeltaY 
+                });
+            
+                // Update local cursor with boundaries
+                currentCursorPosition.x = Math.max(2, Math.min(currentCursorPosition.x + deltaX, rect.width - 2));
+                currentCursorPosition.y = Math.max(2, Math.min(currentCursorPosition.y + deltaY, rect.height - 2));
+                
+                requestAnimationFrame(updateCursorPosition);
+                lastPosition = position;
+            }
+            
+            function createRipple(x, y) {
+                const ripple = document.createElement('div');
+                ripple.className = 'double-tap-indicator';
+                ripple.style.left = `${x}px`;
+                ripple.style.top = `${y}px`;
+                mousepad.appendChild(ripple);
+                
+                ripple.addEventListener('animationend', () => {
+                    ripple.remove();
+                });
+            }
+            
+            function flashCursor(color) {
+                const originalColor = cursor.style.backgroundImage;
+                cursor.style.backgroundImage = `url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="${encodeURIComponent(color)}"><path d="M12 2L4 22L7 17L12 22L17 17L20 22Z"/></svg>')`;
+                setTimeout(() => {
+                    cursor.style.backgroundImage = originalColor;
+                }, 200);
+            }
+            
+            function flashScrollButton(id) {
+                const button = document.getElementById(id);
+                button.style.backgroundColor = 'rgba(255, 255, 255, 0.9)';
+                setTimeout(() => {
+                    button.style.backgroundColor = 'rgba(61, 190, 41, 0.8)';
+                }, 200);
+            }
+            
+            // Mouse/touch event handlers
+            mousepad.addEventListener('mousedown', (e) => {
+                if (e.button === 0) {
+                    isTouching = true;
+                    movementDistance = 0;
+                    lastPosition = getPosition(e);
+                }
             });
-        }
-
-        // Mouse/touch event handlers
-        mousepad.addEventListener('mousedown', (e) => {
-            if (e.button === 0) { // Left mouse button
-                isTouching = true;
-                lastPosition = getPosition(e);
-            }
-        });
-
-        mousepad.addEventListener('mousemove', (e) => {
-            if (isTouching && e.buttons === 1) {
-                handleMovement(getPosition(e));
-            }
-        });
-
-        mousepad.addEventListener('mouseup', (e) => {
-            if (e.button === 0 && isTouching) { // Left mouse button
-                const position = getPosition(e);
-                createRipple(position.x, position.y);
-                socket.emit('click', { button: 'left', double: false });
-                isTouching = false;
-                lastPosition = null;
-            }
-        });
-
-        mousepad.addEventListener('dblclick', (e) => {
-            if (e.button === 0) { // Left mouse button double click
-                const position = getPosition(e);
-                createRipple(position.x, position.y);
-                socket.emit('click', { button: 'left', double: true });
-            }
-        });
-
-        mousepad.addEventListener('touchstart', (e) => {
-            e.preventDefault();
-            isTouching = true;
-            lastPosition = getPosition(e);
-        });
-
-        mousepad.addEventListener('touchmove', (e) => {
-            e.preventDefault();
-            if (isTouching) {
-                handleMovement(getPosition(e));
-            }
-        });
-
-        mousepad.addEventListener('touchend', (e) => {
-            e.preventDefault();
-            const currentTime = new Date().getTime();
-            const tapLength = currentTime - lastTapTime;
             
-            if (tapLength < 300 && tapLength > 0) {
-                // Double tap detected
-                clearTimeout(tapTimeout);
-                const position = getPosition(e.changedTouches[0]);
-                createRipple(position.x, position.y);
-                socket.emit('click', { button: 'left', double: true });
-                isTouching = false;
-                lastPosition = null;
-            } else {
-                // Single tap
-                tapTimeout = setTimeout(() => {
-                    if (isTouching) {
-                        const position = getPosition(e.changedTouches[0]);
+            mousepad.addEventListener('mousemove', (e) => {
+                if (isTouching && e.buttons === 1) {
+                    handleMovement(getPosition(e));
+                }
+            });
+            
+            mousepad.addEventListener('mouseup', (e) => {
+                if (e.button === 0 && isTouching) {
+                    const position = getPosition(e);
+                    
+                    if (movementDistance < MOVEMENT_THRESHOLD) {
                         createRipple(position.x, position.y);
                         socket.emit('click', { button: 'left', double: false });
                     }
+                    
+                    movementDistance = 0;
                     isTouching = false;
                     lastPosition = null;
-                }, 310);
-            }
-            
-            lastTapTime = currentTime;
-        });
-
-        // Click handlers
-        document.getElementById('leftClick').addEventListener('click', () => {
-            socket.emit('click', { button: 'left', double: false });
-            // Visual feedback
-            flashCursor('#3DBE29');
-        });
-
-        document.getElementById('rightClick').addEventListener('click', () => {
-            socket.emit('click', { button: 'right', double: false });
-            // Visual feedback
-            flashCursor('#EA4335');
-        });
-
-        function flashCursor(color) {
-            const originalColor = cursor.style.backgroundImage;
-            cursor.style.backgroundImage = `url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="${encodeURIComponent(color)}"><path d="M12 2L4 22L7 17L12 22L17 17L20 22Z"/></svg>')`;
-            setTimeout(() => {
-                cursor.style.backgroundImage = originalColor;
-            }, 200);
-        }
-
-        // Scroll handlers
-        document.getElementById('scroll-up').addEventListener('mousedown', () => {
-            socket.emit('scroll', { deltaY: -50 });
-            flashScrollButton('scroll-up');
-        });
-
-        document.getElementById('scroll-down').addEventListener('mousedown', () => {
-            socket.emit('scroll', { deltaY: 50 });
-            flashScrollButton('scroll-down');
-        });
-
-        // Touch scroll handlers for mobile
-        document.getElementById('scroll-up').addEventListener('touchstart', (e) => {
-            e.preventDefault();
-            socket.emit('scroll', { deltaY: -50 });
-            flashScrollButton('scroll-up');
-        });
-
-        document.getElementById('scroll-down').addEventListener('touchstart', (e) => {
-            e.preventDefault();
-            socket.emit('scroll', { deltaY: 50 });
-            flashScrollButton('scroll-down');
-        });
-
-        function flashScrollButton(id) {
-            const button = document.getElementById(id);
-            button.style.backgroundColor = 'rgba(255, 255, 255, 0.9)';
-            setTimeout(() => {
-                button.style.backgroundColor = 'rgba(61, 190, 41, 0.8)';
-            }, 200);
-        }
-
-        // Keyboard handlers
-        keyboardToggle.addEventListener('click', () => {
-            keyboardActive = !keyboardActive;
-            
-            if (keyboardActive) {
-                keyboardToggle.classList.add('keyboard-active');
-                keyboardInput.focus();
-            } else {
-                keyboardToggle.classList.remove('keyboard-active');
-                keyboardInput.blur();
-            }
-        });
-
-        keyboardInput.addEventListener('input', (e) => {
-            if (keyboardActive) {
-                socket.emit('keyboard_input', { text: e.target.value });
-                e.target.value = ''; // Clear after sending
-            }
-        });
-
-        keyboardInput.addEventListener('keydown', (e) => {
-            if (keyboardActive) {
-                // Handle special keys
-                if (e.key === 'Enter') {
-                    socket.emit('keyboard_key', { key: 'enter' });
-                } else if (e.key === 'Backspace') {
-                    socket.emit('keyboard_key', { key: 'backspace' });
-                } else if (e.key === ' ') {
-                    socket.emit('keyboard_key', { key: 'space' });
-                } else if (e.key === 'Tab') {
-                    e.preventDefault();
-                    socket.emit('keyboard_key', { key: 'tab' });
-                } else if (e.key === 'Escape') {
-                    socket.emit('keyboard_key', { key: 'escape' });
                 }
-            }
-        });
-
-        // Screen sharing controls
-        screenShareBtn.addEventListener('click', () => {
-            socket.emit('start_screen_share');
-            screenShare.style.display = 'block';
-            screenStatus.style.display = 'none';
-            screenShareBtn.style.display = 'none';
-            screenShareStop.style.display = 'block';
-            screenCursor.style.display = 'block';
-            screenCursorVisible = true;
-        });
-
-        screenShareStop.addEventListener('click', () => {
-            socket.emit('stop_screen_share');
-            screenShare.style.display = 'none';
-            screenStatus.style.display = 'block';
-            screenShareStop.style.display = 'none';
-            screenShareBtn.style.display = 'block';
-            screenCursor.style.display = 'none';
-            screenCursorVisible = false;
-        });
-
-        // Screen share frame processing
-        socket.on('screen_frame', (data) => {
-            const now = performance.now();
+            });
             
-            // Calculate FPS
-            if (lastFrameTime > 0) {
-                frameTimes.push(now - lastFrameTime);
-                if (frameTimes.length > 10) frameTimes.shift();
-                fps = Math.round(1000 / (frameTimes.reduce((a, b) => a + b) / frameTimes.length));
-            }
-            lastFrameTime = now;
+            mousepad.addEventListener('dblclick', (e) => {
+                if (e.button === 0) {
+                    const position = getPosition(e);
+                    createRipple(position.x, position.y);
+                    socket.emit('click', { button: 'left', double: true });
+                }
+            });
             
-            // Process frame
-            try {
-                let imageData;
-                if (data.compressed) {
-                    const compressedData = base64ToArrayBuffer(data.image);
-                    imageData = pako.inflate(compressedData);
+            mousepad.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                isTouching = true;
+                movementDistance = 0;
+                lastPosition = getPosition(e);
+            });
+            
+            mousepad.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                if (isTouching) {
+                    handleMovement(getPosition(e));
+                }
+            });
+            
+            mousepad.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                const currentTime = new Date().getTime();
+                const tapLength = currentTime - lastTapTime;
+                const position = getPosition(e.changedTouches[0]);
+                
+                if (tapLength < TAP_TIME_THRESHOLD && tapLength > 0 && movementDistance < MOVEMENT_THRESHOLD) {
+                    // Double tap detected
+                    clearTimeout(tapTimeout);
+                    createRipple(position.x, position.y);
+                    socket.emit('click', { button: 'left', double: true });
+                } else if (movementDistance < MOVEMENT_THRESHOLD) {
+                    // Single tap
+                    tapTimeout = setTimeout(() => {
+                        createRipple(position.x, position.y);
+                        socket.emit('click', { button: 'left', double: false });
+                    }, 200);
+                }
+            
+                isTouching = false;
+                lastPosition = null;
+                lastTapTime = currentTime;
+            });
+            
+            // Click buttons handlers
+            document.getElementById('leftClick').addEventListener('click', () => {
+                socket.emit('click', { button: 'left', double: false });
+                flashCursor('#3DBE29');
+            });
+            
+            document.getElementById('rightClick').addEventListener('click', () => {
+                socket.emit('click', { button: 'right', double: false });
+                flashCursor('#EA4335');
+            });
+            
+            // Scroll handlers
+            document.getElementById('scroll-up').addEventListener('mousedown', () => {
+                socket.emit('scroll', { deltaY: -50 });
+                flashScrollButton('scroll-up');
+            });
+            
+            document.getElementById('scroll-down').addEventListener('mousedown', () => {
+                socket.emit('scroll', { deltaY: 50 });
+                flashScrollButton('scroll-down');
+            });
+            
+            document.getElementById('scroll-up').addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                socket.emit('scroll', { deltaY: -50 });
+                flashScrollButton('scroll-up');
+            });
+            
+            document.getElementById('scroll-down').addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                socket.emit('scroll', { deltaY: 50 });
+                flashScrollButton('scroll-down');
+            });
+            
+            // Keyboard handlers
+            keyboardToggle.addEventListener('click', () => {
+                keyboardActive = !keyboardActive;
+                
+                if (keyboardActive) {
+                    keyboardToggle.classList.add('keyboard-active');
+                    keyboardInput.focus();
                 } else {
-                    imageData = base64ToArrayBuffer(data.image);
+                    keyboardToggle.classList.remove('keyboard-active');
+                    keyboardInput.blur();
                 }
+            });
+            
+            keyboardInput.addEventListener('input', (e) => {
+                if (keyboardActive) {
+                    socket.emit('keyboard_input', { text: e.target.value });
+                    e.target.value = '';
+                }
+            });
+            
+            keyboardInput.addEventListener('keydown', (e) => {
+                if (keyboardActive) {
+                    if (e.key === 'Enter') {
+                        socket.emit('keyboard_key', { key: 'enter' });
+                    } else if (e.key === 'Backspace') {
+                        socket.emit('keyboard_key', { key: 'backspace' });
+                    } else if (e.key === ' ') {
+                        socket.emit('keyboard_key', { key: 'space' });
+                    } else if (e.key === 'Tab') {
+                        e.preventDefault();
+                        socket.emit('keyboard_key', { key: 'tab' });
+                    } else if (e.key === 'Escape') {
+                        socket.emit('keyboard_key', { key: 'escape' });
+                    }
+                }
+            });
+            
+            // Screen sharing controls
+            screenShareBtn.addEventListener('click', () => {
+                socket.emit('start_screen_share');
+                screenShare.style.display = 'block';
+                screenStatus.style.display = 'none';
+                screenShareBtn.style.display = 'none';
+                screenShareStop.style.display = 'block';
+                screenCursor.style.display = 'block';
+                screenCursorVisible = true;
+            });
+            
+            screenShareStop.addEventListener('click', () => {
+                socket.emit('stop_screen_share');
+                screenShare.style.display = 'none';
+                screenStatus.style.display = 'block';
+                screenShareStop.style.display = 'none';
+                screenShareBtn.style.display = 'block';
+                screenCursor.style.display = 'none';
+                screenCursorVisible = false;
+            });
+            
+            // Screen share frame processing
+            socket.on('screen_frame', (data) => {
+                const now = performance.now();
                 
-                const blob = new Blob([imageData], { type: 'image/jpeg' });
-                const url = URL.createObjectURL(blob);
+                if (lastFrameTime > 0) {
+                    frameTimes.push(now - lastFrameTime);
+                    if (frameTimes.length > 10) frameTimes.shift();
+                    fps = Math.round(1000 / (frameTimes.reduce((a, b) => a + b) / frameTimes.length));
+                }
+                lastFrameTime = now;
                 
-                screenShare.onload = () => {
-                    URL.revokeObjectURL(url);
-                    updateStats(fps, data.quality, data.timestamp);
-                    updateCursorPosition(); // Update screen cursor position after new frame loads
-                };
-                
-                screenShare.src = url;
-            } catch (error) {
-                console.error('Frame processing error:', error);
+                try {
+                    let imageData;
+                    if (data.compressed) {
+                        const compressedData = base64ToArrayBuffer(data.image);
+                        imageData = pako.inflate(compressedData);
+                    } else {
+                        imageData = base64ToArrayBuffer(data.image);
+                    }
+                    
+                    const blob = new Blob([imageData], { type: 'image/jpeg' });
+                    const url = URL.createObjectURL(blob);
+                    
+                    screenShare.onload = () => {
+                        URL.revokeObjectURL(url);
+                        updateStats(fps, data.quality, data.timestamp);
+                        updateCursorPosition();
+                    };
+                    
+                    screenShare.src = url;
+                } catch (error) {
+                    console.error('Frame processing error:', error);
+                }
+            });
+            
+            function base64ToArrayBuffer(base64) {
+                const binaryString = atob(base64);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                return bytes;
             }
-        });
-
-        function base64ToArrayBuffer(base64) {
-            const binaryString = atob(base64);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
+            
+            function updateStats(currentFps, quality, serverTime) {
+                const latency = Math.round((performance.now()/1000 - serverTime) * 1000);
+                statsElement.textContent = `FPS: ${currentFps} | Q: ${quality}% | ${latency}ms`;
             }
-            return bytes;
+            
+            // Handle resize
+            window.addEventListener('resize', () => {
+                rect = mousepad.getBoundingClientRect();
+            });
+            
+            // Initial setup
+            window.dispatchEvent(new Event('resize'));
         }
 
-        function updateStats(currentFps, quality, serverTime) {
-            const latency = Math.round((performance.now()/1000 - serverTime) * 1000);
-            statsElement.textContent = `FPS: ${currentFps} | Q: ${quality}% | ${latency}ms`;
-        }
-
-        // Handle resize
-        window.addEventListener('resize', () => {
-            rect = mousepad.getBoundingClientRect();
-        });
-
-        // Initial setup
-        window.dispatchEvent(new Event('resize'));
+        // Initialize the connection when page loads
+        document.addEventListener('DOMContentLoaded', initializeConnection);
     </script>
 </body>
 </html>

@@ -9,6 +9,7 @@ import time
 import base64
 from mss import mss
 import zlib
+import socket
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
@@ -17,6 +18,16 @@ mouse = Controller()
 keyboard = KeyboardController()
 screen_share_active = False
 compression_enabled = True
+
+def get_local_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))  # Google's public DNS
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return '127.0.0.1'
 
 def generate_frames():
     with mss() as sct:
@@ -76,7 +87,8 @@ def generate_frames():
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    local_ip = get_local_ip()
+    return render_template('index.html', server_ip=local_ip)
 
 @socketio.on('move_mouse')
 def handle_move_mouse(data):
@@ -91,9 +103,9 @@ def handle_click(data):
     try:
         button = Button.left if data['button'] == 'left' else Button.right
         if data.get('double', False):
-            mouse.click(button, 2)  # Double click
+            mouse.click(button, 2)
         else:
-            mouse.click(button)    # Single click
+            mouse.click(button)
     except Exception as e:
         print(f"Click error: {e}")
 
@@ -151,4 +163,6 @@ def handle_disconnect():
     print(f'Client disconnected: {request.sid}')
 
 if __name__ == '__main__':
+    local_ip = get_local_ip()
+    print(f" * Running on http://{local_ip}:5000")
     socketio.run(app, host='0.0.0.0', port=5000, debug=True)
