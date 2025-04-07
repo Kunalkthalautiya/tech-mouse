@@ -89,7 +89,11 @@ def handle_move_mouse(data):
 @socketio.on('click')
 def handle_click(data):
     try:
-        mouse.click(Button.left if data['button'] == 'left' else Button.right)
+        button = Button.left if data['button'] == 'left' else Button.right
+        if data.get('double', False):
+            mouse.click(button, 2)  # Double click
+        else:
+            mouse.click(button)    # Single click
     except Exception as e:
         print(f"Click error: {e}")
 

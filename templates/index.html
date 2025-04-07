@@ -210,6 +210,29 @@
             background: linear-gradient(to right, #FBBC05, #EA4335) !important;
         }
 
+        .double-tap-indicator {
+            position: absolute;
+            width: 40px;
+            height: 40px;
+            background-color: rgba(61, 190, 41, 0.3);
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 2;
+            transform: translate(-50%, -50%);
+            animation: ripple 0.6s ease-out;
+        }
+
+        @keyframes ripple {
+            0% {
+                transform: translate(-50%, -50%) scale(0.1);
+                opacity: 1;
+            }
+            100% {
+                transform: translate(-50%, -50%) scale(2);
+                opacity: 0;
+            }
+        }
+
         @media (max-width: 500px) {
             #screen-container {
                 height: 30vh;
@@ -320,6 +343,10 @@
         let screenCursorVisible = false;
         let keyboardActive = false;
 
+        // Double tap variables
+        let lastTapTime = 0;
+        let tapTimeout;
+
         // Connection status
         socket.on('connect', () => {
             connectionStatus.textContent = 'Connected';
@@ -394,10 +421,24 @@
             lastPosition = position;
         }
 
+        function createRipple(x, y) {
+            const ripple = document.createElement('div');
+            ripple.className = 'double-tap-indicator';
+            ripple.style.left = `${x}px`;
+            ripple.style.top = `${y}px`;
+            mousepad.appendChild(ripple);
+            
+            ripple.addEventListener('animationend', () => {
+                ripple.remove();
+            });
+        }
+
         // Mouse/touch event handlers
         mousepad.addEventListener('mousedown', (e) => {
-            isTouching = true;
-            lastPosition = getPosition(e);
+            if (e.button === 0) { // Left mouse button
+                isTouching = true;
+                lastPosition = getPosition(e);
+            }
         });
 
         mousepad.addEventListener('mousemove', (e) => {
@@ -406,9 +447,22 @@
             }
         });
 
-        mousepad.addEventListener('mouseup', () => {
-            isTouching = false;
-            lastPosition = null;
+        mousepad.addEventListener('mouseup', (e) => {
+            if (e.button === 0 && isTouching) { // Left mouse button
+                const position = getPosition(e);
+                createRipple(position.x, position.y);
+                socket.emit('click', { button: 'left', double: false });
+                isTouching = false;
+                lastPosition = null;
+            }
+        });
+
+        mousepad.addEventListener('dblclick', (e) => {
+            if (e.button === 0) { // Left mouse button double click
+                const position = getPosition(e);
+                createRipple(position.x, position.y);
+                socket.emit('click', { button: 'left', double: true });
+            }
         });
 
         mousepad.addEventListener('touchstart', (e) => {
@@ -424,20 +478,44 @@
             }
         });
 
-        mousepad.addEventListener('touchend', () => {
-            isTouching = false;
-            lastPosition = null;
+        mousepad.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            const currentTime = new Date().getTime();
+            const tapLength = currentTime - lastTapTime;
+            
+            if (tapLength < 300 && tapLength > 0) {
+                // Double tap detected
+                clearTimeout(tapTimeout);
+                const position = getPosition(e.changedTouches[0]);
+                createRipple(position.x, position.y);
+                socket.emit('click', { button: 'left', double: true });
+                isTouching = false;
+                lastPosition = null;
+            } else {
+                // Single tap
+                tapTimeout = setTimeout(() => {
+                    if (isTouching) {
+                        const position = getPosition(e.changedTouches[0]);
+                        createRipple(position.x, position.y);
+                        socket.emit('click', { button: 'left', double: false });
+                    }
+                    isTouching = false;
+                    lastPosition = null;
+                }, 310);
+            }
+            
+            lastTapTime = currentTime;
         });
 
         // Click handlers
         document.getElementById('leftClick').addEventListener('click', () => {
-            socket.emit('click', { button: 'left' });
+            socket.emit('click', { button: 'left', double: false });
             // Visual feedback
             flashCursor('#3DBE29');
         });
 
         document.getElementById('rightClick').addEventListener('click', () => {
-            socket.emit('click', { button: 'right' });
+            socket.emit('click', { button: 'right', double: false });
             // Visual feedback
             flashCursor('#EA4335');
         });
